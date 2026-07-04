@@ -1,0 +1,22 @@
+pub const VERSION: &str = "0.0.1";
+
+// -b  option; if 0, dmenu appears at bottom
+pub const TOPBAR: bool = true;
+
+// -fn option overrides fonts[0]; default X11 font or font set
+pub const FONTS: &[&str] = &["monospace:size=10"];
+pub const PROMPT: &str = "";
+
+pub const COLORS: &[[&str; 2]] = &[
+    /*     fg         bg       */
+    ["#bbbbbb", "#222222"], //SchemeNorm
+    ["#eeeeee", "#005577"], //SchemeSel
+    ["#000000", "#00ffff"], //SchemeOut
+];
+
+// -l option; if nonzero, dmenu uses vertical list with given number of lines
+pub const LINES: u32 = 0;
+
+//Characters not considered part of a word while deleting words
+//for example: " /?\"&[]"
+pub const WORD_DELIMETER: &str = " ";
