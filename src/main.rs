@@ -359,6 +359,9 @@ fn readstdin(config: &mut Config, globals: &mut Globals) {
         config.lines = 0;
         return;
     }
+    let mut tmpmax = 0;
+    let mut imax = 0;
+    let mut i = 0;
     loop {
         buf.clear();
         let len = stdin
@@ -370,12 +373,24 @@ fn readstdin(config: &mut Config, globals: &mut Globals) {
         if buf.last() == Some(&b'\n') {
             buf.pop();
         }
+        let text = String::from_utf8_lossy(&buf).into_owned();
+        globals.drw.fonts[0].get_exts(&text, text.len() as u32, Some(&mut tmpmax), None);
+        if tmpmax as i32 > globals.inputw {
+            globals.inputw = tmpmax as i32;
+            imax = i;
+        }
+
         items.push(Item {
-            text: String::from_utf8_lossy(&buf).into_owned(),
+            text: text,
             out: false,
         });
+        i += 1;
     }
     globals.items = items.into_boxed_slice();
+
+    if !globals.items.is_empty() {
+        globals.inputw = text_w(&globals.items[imax].text, &mut globals.drw, globals.lrpad) as i32;
+    }
     config.lines = config.lines.min(globals.items.len() as u32);
 }
 
@@ -404,7 +419,6 @@ fn setup(config: &mut Config, globals: &mut Globals) {
     let mut dws: *mut Window = core::ptr::null_mut();
     let mut du = 0u32;
 
-    //TODO XINERAMA
     #[cfg(feature = "xinerama")]
     {
         let mut test = globals.parentwin == globals.root;
@@ -530,12 +544,13 @@ fn setup(config: &mut Config, globals: &mut Globals) {
     } else {
         0
     };
-    globals.inputw = globals.mw / 3; // input width: ~33% of monitor width
+    globals.inputw = globals.inputw.min(globals.mw / 3); // input width: ~33% of monitor width
     mtch(globals, config);
 
     const EXPOSURE_MASK: i64 = 1 << 15;
     const KEY_PRESS_MASK: i64 = 1 << 0;
     const VISIBILITY_CHANGE_MASK: i64 = 1 << 16;
+    const BUTTON_PRESS_MASK: i64 = 1 << 2;
     const COPY_FROM_PARENT: i64 = 0;
     const CW_OVERRIDE_REDIRECT: u64 = 1 << 9;
     const CW_BACK_PIXEL: u64 = 1 << 1;
@@ -547,7 +562,7 @@ fn setup(config: &mut Config, globals: &mut Globals) {
     swa.override_redirect = 1;
     swa.border_pixel = 0;
     swa.colormap = globals.cmap;
-    swa.event_mask = EXPOSURE_MASK | KEY_PRESS_MASK | VISIBILITY_CHANGE_MASK;
+    swa.event_mask = EXPOSURE_MASK | KEY_PRESS_MASK | VISIBILITY_CHANGE_MASK | BUTTON_PRESS_MASK;
 
     globals.win = unsafe {
         XCreateWindow(
@@ -860,6 +875,7 @@ fn run(globals: &mut Globals, config: &Config) -> i32 {
     const EXPOSE: i32 = 12;
     const FOCUS_IN: i32 = 9;
     const KEY_PRESS: i32 = 2;
+    const BUTTON_PRESS: i32 = 4;
     const SELECTION_NOTIFY: i32 = 31;
     const VISIBILITY_NOTIFY: i32 = 15;
     const VISIBILITY_UNOBSCURED: i32 = 0;
@@ -882,6 +898,11 @@ fn run(globals: &mut Globals, config: &Config) -> i32 {
                     continue;
                 }
                 return 1;
+            }
+            BUTTON_PRESS => {
+                if let Some(code) = button_press(unsafe { &mut ev.xbutton }, globals, config) {
+                    return code;
+                }
             }
             EXPOSE => {
                 if unsafe { ev.xexpose.count } == 0 {
@@ -954,6 +975,201 @@ fn sel_move_down(globals: &mut Globals, config: &Config) {
 /// consistent with the C original, which also inspects individual bytes).
 fn is_word_delim(b: u8, config: &Config) -> bool {
     config.word_delimeter.as_bytes().contains(&b)
+}
+
+fn button_press(ev: &mut XButtonEvent, globals: &mut Globals, config: &Config) -> Option<i32> {
+    let mut x = 0;
+    let mut y = 0;
+    let h = globals.bh;
+
+    if ev.window != globals.win {
+        return None;
+    }
+
+    //Right-click: exit
+    const BUTTON_1: u32 = 1;
+    const BUTTON_2: u32 = 2;
+    const BUTTON_3: u32 = 3;
+    const BUTTON_4: u32 = 4;
+    const BUTTON_5: u32 = 5;
+    if ev.button == BUTTON_3 {
+        return Some(1);
+    }
+
+    // Caps Lock and Num Lock are reported in the event state alongside the
+    // "real" modifiers, but should not affect click handling - strip them so
+    // e.g. a plain click doesn't get misread as a modified one just because
+    // Num Lock happens to be on.
+    const LOCK_MASK: u32 = 1 << 1;
+    const NUM_LOCK_MASK: u32 = 1 << 4;
+    let state = ev.state & !(LOCK_MASK | NUM_LOCK_MASK);
+
+    if !config.prompt.is_empty() {
+        x += globals.promptw;
+    }
+
+    // input field
+    let mut w = if config.lines > 0 || globals.matches.is_empty() {
+        globals.mw - x
+    } else {
+        globals.inputw
+    };
+
+    // left-click on input: clear input,
+    // NOTE: if there is no left-arrow the space for < is reserved so
+    //       add that to the input width
+    if ev.button == BUTTON_1
+        && ((config.lines <= 0
+            && ev.x >= 0
+            && ev.x
+                <= x + w
+                    + (if globals.prev.is_none() || !globals.curr.is_some_and(|p| p > 0) {
+                        text_w("<", &mut globals.drw, globals.lrpad) as i32
+                    } else {
+                        0
+                    }))
+            || (config.lines > 0 && ev.y >= y && ev.y <= y + h))
+    {
+        // insert_text("", globals, config);
+        globals.text.clear();
+        globals.cursor = 0;
+        mtch(globals, config);
+        drawmenu(globals, config);
+        return None;
+    }
+
+    const SHIFT_MASK: u32 = 1 << 0;
+    const CONTROL_MASK: u32 = 1 << 2;
+    const CURRENT_TIME: u64 = 0;
+    const XA_PRIMARY: Atom = 1;
+    // middle-mouse click: paste selection
+    if ev.button == BUTTON_2 {
+        unsafe {
+            XConvertSelection(
+                globals.dpy.as_ptr(),
+                if state & SHIFT_MASK != 0 {
+                    globals.clip
+                } else {
+                    XA_PRIMARY
+                },
+                globals.utf8,
+                globals.utf8,
+                globals.win,
+                CURRENT_TIME,
+            )
+        };
+        drawmenu(globals, config);
+        return None;
+    }
+
+    /* scroll up */
+    if ev.button == BUTTON_4 && globals.prev.is_some() {
+        globals.curr = globals.prev;
+        globals.sel = globals.curr;
+        calcoffsets(config, globals);
+        drawmenu(globals, config);
+        return None;
+    }
+    /* scroll down */
+    if ev.button == BUTTON_5 && globals.next.is_some() {
+        globals.curr = globals.next;
+        globals.sel = globals.curr;
+        calcoffsets(config, globals);
+        drawmenu(globals, config);
+        return None;
+    }
+
+    if ev.button != BUTTON_1 {
+        return None;
+    }
+    if state & !CONTROL_MASK != 0 {
+        return None;
+    }
+    if config.lines > 0 {
+        /* vertical list: (ctrl)left-click on item */
+        // w = globals.mw - x;
+        let Some(mut item) = globals.curr else {
+            return None;
+        };
+        let n = globals.next.unwrap_or(globals.matches.len());
+        while item < n {
+            // for (item = curr; item != next; item = item->right) {
+            y += h;
+            if ev.y >= y && ev.y <= (y + h) {
+                println!("{}", globals.items[globals.matches[item]].text);
+                // puts(item->text);
+                if (state & CONTROL_MASK) == 0 {
+                    return Some(0);
+                    // exit(0);
+                }
+                globals.sel = Some(item);
+                if let Some(sel) = globals.sel {
+                    globals.items[globals.matches[sel]].out = true;
+                    drawmenu(globals, config);
+                }
+                return None;
+            }
+            item += 1
+        }
+    } else if !globals.matches.is_empty() {
+        /* left-click on left arrow */
+        x += globals.inputw;
+        w = text_w("<", &mut globals.drw, globals.lrpad) as i32;
+        if globals.prev.is_some()
+            && let Some(c) = globals.curr
+            && c > 0
+        {
+            if ev.x >= x && ev.x <= x + w {
+                globals.curr = globals.prev;
+                globals.sel = globals.curr;
+                calcoffsets(config, globals);
+                drawmenu(globals, config);
+                return None;
+            }
+        }
+        /* horizontal list: (ctrl)left-click on item */
+        let Some(mut item) = globals.curr else {
+            return None;
+        };
+        let n = globals.next.unwrap_or(globals.matches.len());
+        while item < n {
+            // for (item = curr; item != next; item = item->right) {
+            x += w;
+            w = i32::min(
+                text_w(
+                    &globals.items[globals.matches[item]].text,
+                    &mut globals.drw,
+                    globals.lrpad,
+                ) as i32,
+                globals.mw - x - text_w(">", &mut globals.drw, globals.lrpad) as i32,
+            );
+            if ev.x >= x && ev.x <= x + w {
+                println!("{}", globals.items[globals.matches[item]].text);
+                // puts(item->text);
+                if state & CONTROL_MASK == 0 {
+                    return Some(0);
+                }
+                globals.sel = Some(item);
+                if let Some(sel) = globals.sel {
+                    globals.items[globals.matches[sel]].out = true;
+                    drawmenu(globals, config);
+                }
+                return None;
+            }
+            item += 1;
+        }
+        /* left-click on right arrow */
+        w = text_w(">", &mut globals.drw, globals.lrpad) as i32;
+        x = globals.mw - w;
+        if globals.next.is_some() && ev.x >= x && ev.x <= x + w {
+            globals.curr = globals.next;
+            globals.sel = globals.curr;
+            calcoffsets(config, globals);
+            drawmenu(globals, config);
+            return None;
+        }
+    }
+    None
 }
 
 fn keypress(ev: &mut XKeyEvent, globals: &mut Globals, config: &Config) -> Option<i32> {

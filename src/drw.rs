@@ -501,7 +501,13 @@ impl Fnt {
         })
     }
 
-    fn get_exts(&mut self, text: &str, len: u32, w: Option<&mut u32>, h: Option<&mut u32>) {
+    pub(crate) fn get_exts(
+        &mut self,
+        text: &str,
+        len: u32,
+        w: Option<&mut u32>,
+        h: Option<&mut u32>,
+    ) {
         let mut ext: XGlyphInfo = unsafe { core::mem::zeroed() };
         if text.is_empty() {
             return;

@@ -236,6 +236,7 @@ pub(crate) union XEvent {
     pub(crate) xkey: XKeyEvent,
     pub(crate) xselection: XSelectionEvent,
     pub(crate) xvisibility: XVisibilityEvent,
+    pub(crate) xbutton: XButtonEvent,
     pad: [i64; 24],
 }
 
@@ -321,6 +322,26 @@ pub(crate) struct XVisibilityEvent {
     display: *mut Display,
     requestor: Window,
     pub(crate) state: c_int,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct XButtonEvent {
+    typ: c_int,
+    serial: c_ulong,
+    send_event: c_int,
+    display: *mut Display,
+    pub(crate) window: Window,
+    root: Window,
+    subwindow: Window,
+    time: Time,
+    pub(crate) x: c_int,
+    pub(crate) y: c_int,
+    x_root: c_int,
+    y_root: c_int,
+    pub(crate) state: c_uint,
+    pub(crate) button: c_uint,
+    same_screen: c_int,
 }
 
 #[repr(C)]
