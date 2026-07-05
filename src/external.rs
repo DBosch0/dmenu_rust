@@ -229,7 +229,7 @@ pub(crate) struct XSetWindowAttributes {
 
 #[repr(C)]
 pub(crate) union XEvent {
-    pub(crate) typ: i32,
+    pub(crate) typ: c_int,
     pub(crate) xdestroywindow: XDestroyWindowEvent,
     pub(crate) xexpose: XExposeEvent,
     pub(crate) xfocus: XFocusChangeEvent,
@@ -237,7 +237,7 @@ pub(crate) union XEvent {
     pub(crate) xselection: XSelectionEvent,
     pub(crate) xvisibility: XVisibilityEvent,
     pub(crate) xbutton: XButtonEvent,
-    pad: [i64; 24],
+    pad: [c_long; 24],
 }
 
 #[repr(C)]
@@ -370,9 +370,9 @@ unsafe extern "C" {
     pub(crate) fn XCreatePixmap(
         display: *mut Display,
         d: Drawable,
-        width: u32,
-        height: u32,
-        depth: u32,
+        width: c_uint,
+        height: c_uint,
+        depth: c_uint,
     ) -> Pixmap;
     pub(crate) fn XCreateGC(
         display: *mut Display,
@@ -445,15 +445,15 @@ unsafe extern "C" {
     pub(crate) fn XCreateWindow(
         display: *mut Display,
         parent: Window,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-        border_width: u32,
-        depth: i32,
-        class: u32,
+        x: c_int,
+        y: c_int,
+        width: c_uint,
+        height: c_uint,
+        border_width: c_uint,
+        depth: c_int,
+        class: c_uint,
         visual: *mut Visual,
-        value_mask: u64,
+        value_mask: c_ulong,
         attributes: *mut XSetWindowAttributes,
     ) -> Window;
     pub(crate) fn XSetClassHint(
@@ -570,34 +570,34 @@ unsafe extern "C" {
 
 // X11 Macros expressed as helper functions
 #[inline(always)]
-unsafe fn screen_of_display(dpy: *mut Display, src: i32) -> *mut Screen {
+unsafe fn screen_of_display(dpy: *mut Display, src: c_int) -> *mut Screen {
     assert!(src >= 0, "src cannot be negative");
     let priv_dpy: *mut _XPrivDisplay = dpy.cast();
     unsafe { (*priv_dpy).screens.add(src as usize) }
 }
 
 #[inline(always)]
-pub(crate) unsafe fn default_depth(dpy: *mut Display, src: i32) -> i32 {
+pub(crate) unsafe fn default_depth(dpy: *mut Display, src: c_int) -> c_int {
     (unsafe { &*screen_of_display(dpy, src) }).root_depth
 }
 
 #[inline(always)]
-pub(crate) unsafe fn default_visual(dpy: *mut Display, src: i32) -> *mut Visual {
+pub(crate) unsafe fn default_visual(dpy: *mut Display, src: c_int) -> *mut Visual {
     (unsafe { &*screen_of_display(dpy, src) }).root_visual
 }
 
 #[inline(always)]
-pub(crate) unsafe fn default_colormap(dpy: *mut Display, src: i32) -> Colormap {
+pub(crate) unsafe fn default_colormap(dpy: *mut Display, src: c_int) -> Colormap {
     (unsafe { &*screen_of_display(dpy, src) }).cmap
 }
 
 #[inline(always)]
-pub(crate) unsafe fn root_window(dpy: *mut Display, src: i32) -> Window {
+pub(crate) unsafe fn root_window(dpy: *mut Display, src: c_int) -> Window {
     (unsafe { &*screen_of_display(dpy, src) }).root
 }
 
 #[inline(always)]
-pub(crate) unsafe fn default_screen(dpy: *mut Display) -> i32 {
+pub(crate) unsafe fn default_screen(dpy: *mut Display) -> c_int {
     let priv_dpy: *mut _XPrivDisplay = dpy.cast();
     { unsafe { &*priv_dpy } }.default_screen
 }
