@@ -9,6 +9,7 @@ pub(crate) type Pixmap = XID;
 pub(crate) type Colormap = XID;
 pub(crate) type Font = XID;
 pub(crate) type KeySym = XID;
+pub(crate) type PictFormat = XID;
 pub(crate) type VisualID = c_ulong;
 pub(crate) type Atom = c_ulong;
 pub(crate) type Time = c_ulong;
@@ -18,6 +19,7 @@ pub(crate) type GC = *mut _XGC;
 pub(crate) type XPointer = *mut c_char;
 pub(crate) type XIC = *mut _XIC;
 pub(crate) type XIM = *mut _XIM;
+pub(crate) type XrmDatabase = *mut _XrmHashBucketRec;
 
 // X11 Structures
 
@@ -211,7 +213,7 @@ pub(crate) struct XSetWindowAttributes {
     background_pixmap: Pixmap,
     pub(crate) background_pixel: c_ulong,
     border_pixmap: Pixmap,
-    border_pixel: c_ulong,
+    pub(crate) border_pixel: c_ulong,
     bit_gravity: c_int,
     win_gravity: c_int,
     backing_store: c_int,
@@ -221,7 +223,7 @@ pub(crate) struct XSetWindowAttributes {
     pub(crate) event_mask: c_long,
     do_not_propagate_mask: c_long,
     pub(crate) override_redirect: c_int,
-    colormap: Colormap,
+    pub(crate) colormap: Colormap,
     cursor: Cursor,
 }
 
@@ -319,6 +321,26 @@ pub(crate) struct XVisibilityEvent {
     display: *mut Display,
     requestor: Window,
     pub(crate) state: c_int,
+}
+
+#[repr(C)]
+pub(crate) struct XrmValue {
+    size: c_uint,
+    pub(crate) addr: XPointer,
+}
+
+#[repr(C)]
+pub(crate) struct XVisualInfo {
+    pub(crate) visual: *mut Visual,
+    visualid: VisualID,
+    pub(crate) screen: c_int,
+    pub(crate) depth: c_int,
+    pub(crate) class: c_int,
+    red_mask: c_ulong,
+    green_mask: c_ulong,
+    blue_mask: c_ulong,
+    colormap_size: c_int,
+    bits_per_rgb: c_int,
 }
 
 // X11 External Functions
@@ -500,6 +522,29 @@ unsafe extern "C" {
         win_y_return: *mut c_int,
         mask_return: *mut c_uint,
     ) -> c_int;
+    pub(crate) fn XrmInitialize();
+    pub(crate) fn XrmGetStringDatabase(data: *const c_char) -> XrmDatabase;
+    pub(crate) fn XrmGetResource(
+        database: XrmDatabase,
+        str_name: *const c_char,
+        str_class: *const c_char,
+        str_type_return: *mut *mut c_char,
+        value_return: *mut XrmValue,
+    ) -> c_int;
+    pub(crate) fn XrmDestroyDatabase(database: XrmDatabase);
+    pub(crate) fn XResourceManagerString(display: *mut Display) -> *mut c_char;
+    pub(crate) fn XGetVisualInfo(
+        display: *mut Display,
+        vinfo_mask: c_long,
+        vinfo_template: *mut XVisualInfo,
+        nitems_retun: *mut c_int,
+    ) -> *mut XVisualInfo;
+    pub(crate) fn XCreateColormap(
+        display: *mut Display,
+        w: Window,
+        visual: *mut Visual,
+        alloc: c_int,
+    ) -> Colormap;
 }
 
 // X11 Macros expressed as helper functions
@@ -661,6 +706,36 @@ unsafe extern "C" {
         dpy: *mut Display,
         number: *mut c_int,
     ) -> *mut XineramaScreenInfo;
+}
+
+// XRender
+#[repr(C)]
+pub(crate) struct XRenderPictFormat {
+    id: PictFormat,
+    pub(crate) typ: c_int,
+    depth: c_int,
+    pub(crate) direct: XRenderDirectFormat,
+    colormap: Colormap,
+}
+
+#[repr(C)]
+pub(crate) struct XRenderDirectFormat {
+    red: c_short,
+    red_mask: c_short,
+    green: c_short,
+    green_mask: c_short,
+    blue: c_short,
+    blue_mask: c_short,
+    alpha: c_short,
+    pub(crate) alpha_mask: c_short,
+}
+
+#[link(name = "Xrender")]
+unsafe extern "C" {
+    pub(crate) fn XRenderFindVisualFormat(
+        dpy: *mut Display,
+        visual: *const Visual,
+    ) -> *mut XRenderPictFormat;
 }
 
 // Keycode Constants

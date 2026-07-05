@@ -9,7 +9,10 @@ use std::{
     time::Duration,
 };
 
-use crate::{drw::Drw, external::*};
+use crate::{
+    drw::{COLORS_PER_SCHEME, Drw},
+    external::*,
+};
 
 mod config;
 mod drw;
@@ -56,6 +59,7 @@ struct Globals {
     mh: i32,
     inputw: i32,
     promptw: i32,
+    passwd: bool,
     lrpad: i32,
     cursor: usize,
     items: Box<[Item]>, //Vec<Item>,
@@ -82,6 +86,10 @@ struct Globals {
     xic: XIC,
     drw: Drw,
     scheme: [Rc<[drw::Clr; 2]>; SCHEME_LAST],
+    useargb: bool,
+    visual: NonNull<Visual>,
+    depth: i32,
+    cmap: Colormap,
 }
 
 impl Globals {
@@ -121,6 +129,11 @@ impl Globals {
             sel: None,
             next: None,
             prev: None,
+            useargb: false,
+            visual: NonNull::dangling(),
+            depth: 0,
+            cmap: 0,
+            passwd: false,
         }
     }
 }
@@ -132,7 +145,7 @@ struct Item {
 }
 
 fn usage() {
-    eprintln!("usage: dmenu [-bfiv] [-l lines] [-p prompt] [-fn font] [-m monitor]");
+    eprintln!("usage: dmenu [-bfivP] [-l lines] [-p prompt] [-fn font] [-m monitor]");
     eprintln!("             [-nb color] [-nf color] [-sb color] [-sf color] [-w windowid]");
     exit(1);
 }
@@ -177,7 +190,8 @@ struct Config {
     topbar: bool,
     fonts: Vec<String>,
     prompt: String,
-    colors: Vec<[String; 2]>,
+    colors: Vec<[String; COLORS_PER_SCHEME]>,
+    alphas: Vec<[u32; 2]>,
     lines: u32,
     word_delimeter: String,
     case_insensitive: bool,
@@ -193,6 +207,7 @@ impl<'a> Default for Config {
                 .iter()
                 .map(|[a, b]| [a.to_string(), b.to_string()])
                 .collect(),
+            alphas: config::ALPHAS.iter().map(|a| *a).collect(),
             lines: config::LINES,
             word_delimeter: config::WORD_DELIMETER.to_string(),
             case_insensitive: false,
@@ -339,6 +354,11 @@ fn readstdin(config: &mut Config, globals: &mut Globals) {
     let mut buf = Vec::new();
     let mut stdin = stdin().lock();
     let mut items = Vec::new();
+    if globals.passwd {
+        globals.inputw = 0;
+        config.lines = 0;
+        return;
+    }
     loop {
         buf.clear();
         let len = stdin
@@ -367,7 +387,7 @@ fn setup(config: &mut Config, globals: &mut Globals) {
         res_class: c"dmenu".as_ptr().cast_mut(),
     };
     for j in 0..SCHEME_LAST {
-        globals.scheme[j] = globals.drw.scm_create(&config.colors[j]);
+        globals.scheme[j] = globals.drw.scm_create(&config.colors[j], &config.alphas[j]);
     }
     globals.clip = unsafe { XInternAtom(globals.dpy.as_ptr(), c"CLIPBOARD".as_ptr(), 0) };
     globals.utf8 = unsafe { XInternAtom(globals.dpy.as_ptr(), c"UTF8_STRING".as_ptr(), 0) };
@@ -520,10 +540,13 @@ fn setup(config: &mut Config, globals: &mut Globals) {
     const CW_OVERRIDE_REDIRECT: u64 = 1 << 9;
     const CW_BACK_PIXEL: u64 = 1 << 1;
     const CW_EVENT_MASK: u64 = 1 << 11;
+    const CW_BORDER_PIXEL: u64 = 1 << 3;
+    const CW_COLOR_MAP: u64 = 1 << 13;
 
     // create menu window
     swa.override_redirect = 1;
-    swa.background_pixel = globals.scheme[SCHEME_NORM][drw::COL_BG].pixel;
+    swa.border_pixel = 0;
+    swa.colormap = globals.cmap;
     swa.event_mask = EXPOSURE_MASK | KEY_PRESS_MASK | VISIBILITY_CHANGE_MASK;
 
     globals.win = unsafe {
@@ -535,10 +558,10 @@ fn setup(config: &mut Config, globals: &mut Globals) {
             globals.mw as u32,
             globals.mh as u32,
             0,
-            COPY_FROM_PARENT as i32,
+            globals.depth,
             COPY_FROM_PARENT as u32,
-            core::ptr::null_mut(),
-            CW_OVERRIDE_REDIRECT | CW_BACK_PIXEL | CW_EVENT_MASK,
+            globals.visual.as_ptr(),
+            CW_OVERRIDE_REDIRECT | CW_BACK_PIXEL | CW_BORDER_PIXEL | CW_COLOR_MAP | CW_EVENT_MASK,
             &mut swa,
         )
     };
@@ -659,15 +682,28 @@ fn drawmenu(globals: &mut Globals, config: &Config) {
     globals
         .drw
         .set_scheme(Rc::clone(&globals.scheme[SCHEME_NORM]));
-    globals.drw.text(
-        x,
-        0,
-        w as u32,
-        globals.bh as u32,
-        globals.lrpad as u32 / 2,
-        globals.text.as_str(),
-        0,
-    );
+    if globals.passwd {
+        let censort = '.'.to_string().repeat(globals.text.len());
+        globals.drw.text(
+            x,
+            0,
+            w as u32,
+            globals.bh as u32,
+            globals.lrpad as u32 / 2,
+            &censort,
+            0,
+        );
+    } else {
+        globals.drw.text(
+            x,
+            0,
+            w as u32,
+            globals.bh as u32,
+            globals.lrpad as u32 / 2,
+            globals.text.as_str(),
+            0,
+        );
+    }
 
     let mut curpos = text_w(&globals.text, &mut globals.drw, globals.lrpad)
         - text_w(
@@ -1301,15 +1337,176 @@ fn delete_before_cursor(byte_len: usize, globals: &mut Globals, config: &Config)
     mtch(globals, config);
 }
 
+fn read_xresources(config: &mut Config) {
+    unsafe { XrmInitialize() };
+
+    let display = unsafe { XOpenDisplay(core::ptr::null_mut()) };
+    let xrm = unsafe { XResourceManagerString(display) };
+    if !xrm.is_null() {
+        let mut typ: *mut i8 = core::ptr::null_mut();
+        let xdb = unsafe { XrmGetStringDatabase(xrm) };
+        let mut xval: XrmValue = unsafe { core::mem::zeroed() };
+
+        if unsafe {
+            XrmGetResource(
+                xdb,
+                c"dmenu.font".as_ptr(),
+                c"*".as_ptr(),
+                &mut typ,
+                &mut xval,
+            )
+        } != 0
+        {
+            /* font or font set */
+            config.fonts[0] = unsafe {
+                CStr::from_ptr(xval.addr)
+                    .to_str()
+                    .expect("valid str")
+                    .to_owned()
+            };
+        }
+        if unsafe {
+            XrmGetResource(
+                xdb,
+                c"dmenu.color0".as_ptr(),
+                c"*".as_ptr(),
+                &mut typ,
+                &mut xval,
+            )
+        } != 0
+        {
+            /* normal background color */
+            config.colors[SCHEME_NORM][drw::COL_BG] = unsafe {
+                CStr::from_ptr(xval.addr)
+                    .to_str()
+                    .expect("valid str")
+                    .to_owned()
+            }
+        }
+        if unsafe {
+            XrmGetResource(
+                xdb,
+                c"dmenu.color4".as_ptr(),
+                c"*".as_ptr(),
+                &mut typ,
+                &mut xval,
+            )
+        } != 0
+        {
+            /* normal foreground color */
+            config.colors[SCHEME_NORM][drw::COL_FG] = unsafe {
+                CStr::from_ptr(xval.addr)
+                    .to_str()
+                    .expect("valid str")
+                    .to_owned()
+            }
+        }
+        if unsafe {
+            XrmGetResource(
+                xdb,
+                c"dmenu.color4".as_ptr(),
+                c"*".as_ptr(),
+                &mut typ,
+                &mut xval,
+            )
+        } != 0
+        {
+            /* selected background color */
+            config.colors[SCHEME_SEL][drw::COL_BG] = unsafe {
+                CStr::from_ptr(xval.addr)
+                    .to_str()
+                    .expect("valid str")
+                    .to_owned()
+            }
+        }
+        if unsafe {
+            XrmGetResource(
+                xdb,
+                c"dmenu.color0".as_ptr(),
+                c"*".as_ptr(),
+                &mut typ,
+                &mut xval,
+            )
+        } != 0
+        {
+            /* selected foreground color */
+            config.colors[SCHEME_SEL][drw::COL_FG] = unsafe {
+                CStr::from_ptr(xval.addr)
+                    .to_str()
+                    .expect("valid str")
+                    .to_owned()
+            }
+        }
+
+        unsafe { XrmDestroyDatabase(xdb) };
+    }
+    unsafe { XCloseDisplay(display) };
+}
+
+fn xinitvisual(dpy: NonNull<Display>, screen: i32, root: u64) -> (NonNull<Visual>, i32, u64, bool) {
+    const TRUE_COLOR: i32 = 4;
+    let infos: *mut XVisualInfo;
+    let mut fmt: *mut XRenderPictFormat;
+
+    let mut tpl: XVisualInfo = unsafe { core::mem::zeroed() };
+    tpl.screen = screen;
+    tpl.depth = 32;
+    tpl.class = TRUE_COLOR;
+
+    const VISUAL_SCREEN_MASK: i64 = 0x2;
+    const VISUAL_DEPTH_MASK: i64 = 0x4;
+    const VISUAL_CLASS_MASK: i64 = 0x8;
+    const PICT_TYPE_DIRECT: i32 = 1;
+    const ALLOC_NONE: i32 = 0;
+
+    let masks = VISUAL_SCREEN_MASK | VISUAL_DEPTH_MASK | VISUAL_CLASS_MASK;
+    let mut visual: *mut Visual = core::ptr::null_mut();
+    let mut depth = 0;
+    let mut cmap = 0;
+    let mut nitems = 0;
+    let mut useargb = false;
+    infos = unsafe { XGetVisualInfo(dpy.as_ptr(), masks, &mut tpl, &mut nitems) };
+
+    for i in 0..nitems {
+        fmt = unsafe { XRenderFindVisualFormat(dpy.as_ptr(), { &*infos.add(i as usize) }.visual) };
+        if unsafe { &*fmt }.typ == PICT_TYPE_DIRECT && unsafe { &*fmt }.direct.alpha_mask != 0 {
+            visual = unsafe { &*infos.add(i as usize) }.visual;
+            depth = unsafe { &*infos.add(i as usize) }.depth;
+            cmap = unsafe { XCreateColormap(dpy.as_ptr(), root, visual, ALLOC_NONE) };
+            useargb = true;
+            break;
+        }
+    }
+
+    unsafe { XFree(infos.cast()) };
+
+    if visual.is_null() {
+        visual = unsafe { default_visual(dpy.as_ptr(), screen) };
+        depth = unsafe { default_depth(dpy.as_ptr(), screen) };
+        cmap = unsafe { default_colormap(dpy.as_ptr(), screen) };
+    }
+
+    (
+        NonNull::new(visual).expect("valid either by construction or by default visual"),
+        depth,
+        cmap,
+        useargb,
+    )
+}
+
 fn main() -> ExitCode {
     let mut config = Config::default();
 
     let mut fast = false;
     let mut mon = -1;
     let mut embed = String::new();
+    let mut passwd = false;
 
     let args: Vec<String> = env::args().collect();
     let mut i = 1;
+
+    read_xresources(&mut config);
+
     while i < args.len() {
         if args[i] == "-v" {
             eprintln!("demenu-{}", config::VERSION);
@@ -1320,6 +1517,8 @@ fn main() -> ExitCode {
             fast = true
         } else if args[i] == "-i" {
             config.case_insensitive = true;
+        } else if args[i] == "-P" {
+            passwd = true;
         } else if i + 1 == args.len() {
             usage();
         }
@@ -1382,7 +1581,17 @@ fn main() -> ExitCode {
         eprintln!("could not get embedding window attributes: {:x}", parentwin);
         return ExitCode::FAILURE;
     }
-    let mut drw = drw::Drw::create(dpy, screen, root, wa.width as u32, wa.height as u32);
+    let (visual, depth, cmap, useargb) = xinitvisual(dpy, screen, root);
+    let mut drw = drw::Drw::create(
+        dpy,
+        screen,
+        root,
+        wa.width as u32,
+        wa.height as u32,
+        visual,
+        depth as u32,
+        cmap,
+    );
     if !drw.fontset_create(&config.fonts) {
         eprintln!("no fonts could be loaded");
         return ExitCode::FAILURE;
@@ -1396,6 +1605,11 @@ fn main() -> ExitCode {
     globals.screen = screen;
     globals.root = root;
     globals.parentwin = parentwin;
+    globals.depth = depth;
+    globals.cmap = cmap;
+    globals.visual = visual;
+    globals.useargb = useargb;
+    globals.passwd = passwd;
 
     if fast && !stdin().is_terminal() {
         grabkeyboard(dpy, &globals);

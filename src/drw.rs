@@ -9,6 +9,7 @@ use std::{
 
 use crate::{config, external::*};
 
+#[derive(Debug)]
 pub(crate) struct Fnt {
     dpy: NonNull<Display>,
     pub(crate) h: u32,
@@ -29,6 +30,7 @@ pub(crate) type Clr = XftColor;
  * owning Drw is dropped. */
 static NOMATCHES: AtomicPtr<[u32; 128]> = AtomicPtr::new(core::ptr::null_mut());
 
+#[derive(Debug)]
 pub(crate) struct Drw {
     pub(crate) w: u32,
     pub(crate) h: u32,
@@ -39,14 +41,28 @@ pub(crate) struct Drw {
     pub(crate) gc: GC,
     pub(crate) scheme: Rc<[Clr; COLORS_PER_SCHEME]>,
     pub(crate) fonts: Vec<Fnt>,
+    pub(crate) visual: NonNull<Visual>,
+    pub(crate) depth: u32,
+    pub(crate) cmap: Colormap,
 }
 
 impl Drw {
     //TODO: maybe remove box
-    pub(crate) fn create(dpy: NonNull<Display>, screen: i32, root: Window, w: u32, h: u32) -> Self {
+    pub(crate) fn create(
+        dpy: NonNull<Display>,
+        screen: i32,
+        root: Window,
+        w: u32,
+        h: u32,
+        visual: NonNull<Visual>,
+        depth: u32,
+        cmap: Colormap,
+    ) -> Self {
         const LINE_SOLID: i32 = 0;
         const CAP_BUTT: i32 = 1;
         const JOIN_MITER: i32 = 0;
+
+        let drawable = unsafe { XCreatePixmap(dpy.as_ptr(), root, w, h, depth) };
 
         let drw = Drw {
             w,
@@ -54,18 +70,13 @@ impl Drw {
             dpy,
             screen,
             root,
-            drawable: unsafe {
-                XCreatePixmap(
-                    dpy.as_ptr(),
-                    root,
-                    w,
-                    h,
-                    default_depth(dpy.as_ptr(), screen) as u32,
-                )
-            },
-            gc: unsafe { XCreateGC(dpy.as_ptr(), root, 0, core::ptr::null_mut()) },
+            drawable,
+            gc: unsafe { XCreateGC(dpy.as_ptr(), drawable, 0, core::ptr::null_mut()) },
             scheme: Rc::new([Clr::default(); COLORS_PER_SCHEME]),
             fonts: Vec::new(),
+            visual,
+            depth,
+            cmap,
         };
         unsafe { XSetLineAttributes(dpy.as_ptr(), drw.gc, 1, LINE_SOLID, CAP_BUTT, JOIN_MITER) };
 
@@ -84,7 +95,7 @@ impl Drw {
                 self.root,
                 w,
                 h,
-                default_depth(self.dpy.as_ptr(), self.screen) as u32,
+                self.depth, // default_depth(self.dpy.as_ptr(), self.screen) as u32,
             )
         };
     }
@@ -98,7 +109,7 @@ impl Drw {
         !self.fonts.is_empty()
     }
 
-    fn clr_create(&self, dest: &mut Clr, clrname: &str) {
+    fn clr_create(&self, dest: &mut Clr, clrname: &str, alpha: u32) {
         if clrname.is_empty() {
             return;
         }
@@ -106,8 +117,8 @@ impl Drw {
         if unsafe {
             XftColorAllocName(
                 self.dpy.as_ptr(),
-                default_visual(self.dpy.as_ptr(), self.screen),
-                default_colormap(self.dpy.as_ptr(), self.screen),
+                self.visual.as_ptr(), // default_visual(self.dpy.as_ptr(), self.screen),
+                self.cmap,            // default_colormap(self.dpy.as_ptr(), self.screen),
                 clrname_cstr.as_ptr(),
                 dest,
             )
@@ -116,9 +127,14 @@ impl Drw {
             eprintln!("error, cannot allocate color '{}'", clrname);
             exit(1)
         }
+        dest.pixel = (dest.pixel & 0x00ffffff) | (alpha as u64) << 24;
     }
 
-    pub(crate) fn scm_create<const N: usize>(&mut self, clr_names: &[String; N]) -> Rc<[Clr; N]> {
+    pub(crate) fn scm_create<const N: usize>(
+        &mut self,
+        clr_names: &[String; N],
+        alphas: &[u32; N],
+    ) -> Rc<[Clr; N]> {
         if clr_names.is_empty() || clr_names.len() < 2 {
             eprintln!(
                 "Color Scheme incorrectly defined, needs at least 2 colors, got {} colors",
@@ -128,7 +144,7 @@ impl Drw {
         }
         let mut colors = [Clr::default(); N];
         for (i, color_name) in clr_names.iter().enumerate() {
-            self.clr_create(&mut colors[i], color_name);
+            self.clr_create(&mut colors[i], color_name, alphas[i]);
         }
 
         Rc::new(colors)
@@ -229,17 +245,17 @@ impl Drw {
                 )
             };
             unsafe { XFillRectangle(self.dpy.as_ptr(), self.drawable, self.gc, x, y, w, h) };
-            if w < lpad {
-                return x + w as i32;
-            }
             d = unsafe {
                 XftDrawCreate(
                     self.dpy.as_ptr(),
                     self.drawable,
-                    default_visual(self.dpy.as_ptr(), self.screen),
-                    default_colormap(self.dpy.as_ptr(), self.screen),
+                    self.visual.as_ptr(),
+                    self.cmap,
                 )
             };
+            if w < lpad {
+                return x + w as i32;
+            }
             x += lpad as i32;
             w -= lpad;
         }
